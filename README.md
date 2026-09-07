@@ -22,6 +22,11 @@ vulkaninfo --summary | grep -E "deviceName|apiVersion|driverName"
 # apiVersion   = 1.3.277
 ```
 
+> ❓ **Откуда взять ОС донора (OPi 4 Pro)?** Всё, что нужно, — скачать
+> официальный образ и достать из него GPU-файлы. Прямая ссылка и пошаговая
+> инструкция — в разделе **«Шаг 0. Где взять донора»** ниже. Плату 4 Pro
+> покупать не обязательно: файлы можно вытащить прямо из образа.
+
 ---
 
 ## Предыстория: почему вообще понадобилось
@@ -63,7 +68,128 @@ vulkaninfo --summary | grep -E "deviceName|apiVersion|driverName"
 системный mesa-лоадер остаётся на месте, а PowerVR подключается **как ICD**
 (через `/usr/share/vulkan/icd.d/img_icd.json`). Именно поэтому GTK4 не ломается.
 
+---
+
+## 📥 Шаг 0. Где взять донора (ОС для Orange Pi 4 Pro)
+
+> Нужные файлы GPU-стека официально существуют **только внутри образа ОС для
+> Orange Pi 4 Pro** (у Zero 3W их нет — в этом весь смысл переноса).
+> Сам образ сделан для платы **4 Pro**, но файлы из него подходят и Zero 3W:
+> SoC одинаковый (Allwinner A733).
+
+Есть **два пути** — выбирай по ситуации:
+
+| Путь | Когда нужен | Что делаем |
+|---|---|---|
+| **А. Через живую плату** | У тебя **есть** OPi 4 Pro | Ставим на неё эту ОС, заходим по SSH и снимаем архив (шаги 1–6 ниже) |
+| **Б. Без платы, из образа** | Платы **нет**, есть только Zero 3W | Скачиваем образ и вытаскиваем те же файлы прямо из него на компьютере |
+
+Путь Б ничем не хуже: файлы внутри образа идентичны тем, что снимаются с живой
+платы. Если платы нет — просто пропусти шаги 1–2 и сразу переходи к разделу
+«Вариант Б» ниже.
+
+### Ссылка на образ (общая для обоих путей)
+
+**Прямая ссылка (Google Drive, ~1.4 ГБ):**
+
+```
+https://drive.google.com/uc?export=download&id=1tY4g8hSeAWva2CXQG4AfVeuqNLxrUQGy
+```
+
+Файл: `Orangepi4pro_1.1.0_debian_trixie_desktop_xfce_linux6.6.98.7z` —
+официальный образ **Debian 13 (trixie) XFCE**, ядро `6.6.98-sun60iw2`
+(релиз 1.1.0, июль 2026).
+
+> ⚠️ Если Google Drive упрётся в квоту («Quota exceeded») — подожди несколько
+> часов или зайди через VPN. Официальная страница со всеми ссылками
+> (Google Drive / Baidu):
+> EN: `http://www.orangepi.org/html/hardWare/computerAndMicrocontrollers/service-and-support/Orange-Pi-4-Pro.html`
+> CN: `http://www.orangepi.cn/html/hardWare/computerAndMicrocontrollers/service-and-support/Orange-Pi-4-Pro.html`
+
+### Что внутри архива
+
+В `.7z` лежат **два файла** (никаких вложенных папок):
+
+```
+Orangepi4pro_1.1.0_debian_trixie_desktop_xfce_linux6.6.98.7z   (~1.4 ГБ, архив)
+└── Orangepi4pro_1.1.0_debian_trixie_desktop_xfce_linux6.6.98.img   (6.85 ГиБ — сам образ ОС)
+└── Orangepi4pro_1.1.0_debian_trixie_desktop_xfce_linux6.6.98.img.sha   (контрольная сумма)
+```
+
+Образ `.img` — это готовая «флешка»: внутри один раздел с системой
+(загрузчик занимает первые 32 МиБ, дальше rootfs). Распаковка:
+
+```bash
+# Linux/macOS (Windows — 7-Zip из проводника, дальше см. запись на карту)
+sudo apt install p7zip-full   # Debian/Ubuntu
+7z x Orangepi4pro_1.1.0_debian_trixie_desktop_xfce_linux6.6.98.7z
+```
+
+Проверка целостности (необязательно, но полезно):
+
+```bash
+sha256sum -c Orangepi4pro_1.1.0_debian_trixie_desktop_xfce_linux6.6.98.img.sha
+# ожидаемо: OK  (sha256: 257db23c…d357c)
+```
+
+### Вариант А: записать образ на плату 4 Pro
+
+Нужна microSD от 8 ГБ (или eMMC/NVMe — но проще начать с SD).
+
+```bash
+# 1. Найти свою карту (ОСТОРОЖНО: убедись, что это /dev/sdX, а не твой диск!)
+lsblk
+
+# 2. Записать образ (X замени на букву своей карты, например sdb)
+sudo dd if=Orangepi4pro_1.1.0_debian_trixie_desktop_xfce_linux6.6.98.img of=/dev/sdX bs=4M status=progress conv=fsync
+```
+
+Windows/macOS: проще через **Raspberry Pi Imager** или **balenaEtcher**
+(выбрать образ → выбрать карту → Write). После записи: вставь карту в 4 Pro,
+подключи питание, дождись загрузки (логин `orangepi` / `orangepi`) — и дальше
+по шагам 1–6 ниже.
+
+### Вариант Б: вытащить GPU-файлы из образа БЕЗ платы
+
+Всё делается на обычном Linux-ПК (или прямо на Zero 3W). Образ — это один
+раздел ext4, начинающийся со смещения **33 554 432 байта** (32 МиБ).
+
+```bash
+# 1. Смонтировать образ (только чтение)
+sudo mkdir -p /mnt/opi4pro
+sudo mount -o loop,ro,offset=33554432 \
+     Orangepi4pro_1.1.0_debian_trixie_desktop_xfce_linux6.6.98.img /mnt/opi4pro
+
+# 2. Собрать архив с GPU-стеком (те же файлы, что снимает Шаг 2 с живой платы)
+sudo tar czf ~/pvr-stack.tar.gz \
+  -C /mnt/opi4pro \
+  usr/lib/libVK_IMG.so* usr/lib/libsrv_um* usr/lib/libusc* usr/lib/libufwriter* \
+  usr/lib/libglslcompiler* usr/lib/libPVROCL* usr/lib/libPVRScopeServices* \
+  usr/lib/libsutu_display* usr/lib/libGLESv1_CM_PVR_MESA* usr/lib/libGLESv2_PVR_MESA* \
+  usr/lib/libpvr_dri_support* usr/lib/libOpenCL.so* \
+  usr/local/lib/libEGL.so* usr/local/lib/libgbm.so* usr/local/lib/libglapi* \
+  usr/local/lib/libGLESv1_CM.so* usr/local/lib/libGLESv2.so* \
+  usr/local/lib/libpvr_mesa_wsi.so* \
+  usr/local/lib/dri/pvr_dri.so usr/local/lib/dri/sunxi-drm_dri.so usr/local/lib/dri/swrast_dri.so \
+  usr/lib/firmware/rgx.fw.* usr/lib/firmware/rgx.sh* \
+  usr/share/vulkan/icd.d/img_icd.json \
+  etc/OpenCL/vendors/pvr.icd \
+  etc/ld.so.conf.d/00-pvr-priority.conf
+
+# 3. Отмонтировать
+sudo umount /mnt/opi4pro
+```
+
+Архив `~/pvr-stack.tar.gz` готов (~40 МБ) — теперь переходи к **Шагу 3**
+(залить на Zero 3W), шаги 1–2 пропускаются: доступ к плате и съём файлов
+уже не нужны.
+
+---
+
 ### Шаг 1. Доступ к донору
+
+> Этот шаг нужен **только для Варианта А** (есть живая плата 4 Pro).
+> Если ты вытащил файлы из образа (Вариант Б) — сразу иди к Шагу 3.
 
 SSH-ключ на 4 Pro (пароль может не приниматься, если sshd настроен на ключи):
 ```bash
@@ -86,7 +212,7 @@ sudo tar czf /tmp/pvr-stack.tar.gz \
   /usr/local/lib/libGLESv1_CM.so* /usr/local/lib/libGLESv2.so* \
   /usr/local/lib/libpvr_mesa_wsi.so* \
   /usr/local/lib/dri/pvr_dri.so /usr/local/lib/dri/sunxi-drm_dri.so /usr/local/lib/dri/swrast_dri.so \
-  /usr/lib/firmware/rgx.fw.* /usr/lib/firmware/rgx.sh \
+  /usr/lib/firmware/rgx.fw.* /usr/lib/firmware/rgx.sh* \
   /usr/share/vulkan/icd.d/img_icd.json \
   /etc/OpenCL/vendors/pvr.icd \
   /etc/ld.so.conf.d/00-pvr-priority.conf
