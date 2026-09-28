@@ -146,6 +146,11 @@ VK_LOADER_DEBUG=layer PVR_FAKE_GS=1 <ваше GL-приложение> 2>&1 | gr
 
 На нашей плате это даёт `Found manifest file …/implicit_layer.d/VkLayer_PVR_strip.json`.
 
+⚠️ Найденный манифест — это ещё **не включённый** слой: `grep` доказывает лишь, что лоадер
+видит файл. Что слой реально работает, доказывает функциональный тест — `glxinfo -B` даёт
+`zink Vulkan 1.3(PowerVR …)`, а без `PVR_FAKE_GS=1` рендерера нет вовсе (§2.2). Обе проверки
+собраны в `scripts/opengl-zink-verify.sh` (шаги 2 и 3).
+
 ### Ловушки манифеста (каждая стоила отладки)
 
 | Ловушка | Что происходит |
@@ -190,7 +195,30 @@ VK_LOADER_DEBUG=layer PVR_FAKE_GS=1 <ваше GL-приложение> 2>&1 | gr
 | `glxinfo -B` renderer | llvmpipe (LLVM 19.1.7), GL 4.5 | zink Vulkan 1.3(PowerVR B-Series BXM-4-64 MC1), GL 2.1 |
 | `glxgears -info` (реальное окно + обмен буферов) | ✅ 840 / 841 frames in 5.0 s = **167,9 FPS** | ❌ **SIGABRT (код 134)** до первого интервала FPS, только предупреждение про `fillModeNonSolid` |
 | `VK_LOADER_DEBUG` | слой не найден | `Found manifest file …/VkLayer_PVR_strip.json` |
+| `glmark2-es2 --off-screen` (без окна) | — (софт через EGL не поднимается, см. ниже) | ✅ **Score 251** |
+| вендорский GLES на той же плате (`glmark2-es2 --off-screen`) | **Score 332** | — |
 | ядро после опытов | — | без ошибок `pvrsrvkm`, дедлока нет (uptime не сброшен) |
+
+Примечания к нашим замерам:
+
+- **Окно падает, off-screen — работает.** Это ключевая пара: `glxgears` в окне со слоем даёт
+  SIGABRT, а `glmark2-es2 --off-screen` тем же окружением — честные 251 балл. Значит слой и
+  zink-конвейер рабочие, а упор — в **путь вывода** (WSI/презентация в X11 без DRI3/kmsro).
+- **Софт через EGL не поднимается вообще**: `glmark2-es2 --off-screen` на llvmpipe падает с
+  `eglInitialize() failed with error: 0x3001` (и в логах то же `libEGL warning: egl: failed to
+  create dri2 screen`). То есть на этой плате софтверный GL живёт в GLX-окне, а не в EGL —
+  отсюда и размен §7: окно — софт, EGL/off-screen — аппарат.
+- **Соотношение zink/вендорский GLES:** 251 / 332 = **76 %** — совпадает с ~70 % на
+  референсной плате, то есть пропорция устойчива.
+- **Частота GPU в момент замеров — 400 МГц** (`/sys/class/devfreq/1800000.gpu/cur_freq` =
+  `400000000`). Оверлей частоты из Шага 3 плана не поднимали, поэтому сравнивать числа имеет
+  смысл только при одинаковой частоте (на референсе цифры 581/826 сняты при 1104 МГц).
+- **Причина падения окна на уровне трейса не снята** — и это честно: ни Mesa, ни загрузчик
+  ничего не печатают перед `abort` (в stderr только предупреждение про `fillModeNonSolid`),
+  `coredumpctl` без прав, а `ZINK_DEBUG=validation` требует слоя валидации, которого в системе
+  нет (`MESA: error: Failed to load validation layer`). Что известно достоверно: контекст и
+  рендерер поднимаются, off-screen даёт 251 балл, софтверное окно в тех же условиях работает
+  (167,9 FPS), DRI3 у X-сервера отсутствует. Вывод — упор в путь вывода, а не в слой.
 
 **Референсная плата с той же GPU и тем же DDK** (Radxa Cubie A7A, Debian 13 trixie,
 `glmark2-es2 --off-screen -b build:duration=2`):
