@@ -12,14 +12,26 @@ export DISPLAY="${DISPLAY:-:0}"
 OUT="${TMPDIR:-/tmp}/glmark2-ours"
 mkdir -p "$OUT"
 
+gpu_state() { # частота и governor GPU: числа сравнимы только при одной частоте,
+              # у devfreq частота «дышит» прямо внутри теста
+    for d in /sys/class/devfreq/*gpu*; do
+        [ -d "$d" ] || continue
+        printf '   %s: cur=%s Hz, governor=%s\n' "$(basename "$d")" \
+            "$(cat "$d/cur_freq" 2>/dev/null || echo '?')" \
+            "$(cat "$d/governor" 2>/dev/null || echo '?')"
+    done
+}
+
 run() { # $1=метка, дальше — окружение для env(1)
     label=$1; shift
     echo "=== $label ==="
+    echo "   частота ДО прогона:"; gpu_state
     env "$@" timeout -s KILL 300 glmark2-es2 --off-screen -b build:duration=2 \
         > "$OUT/$label.log" 2>&1
     echo "   код возврата: $?"
     grep -aE 'GL_RENDERER|GL_VERSION|glmark2 Score' "$OUT/$label.log" | tail -3 | sed 's/^/      /'
     grep -aiE 'error|fail|abort|segmentation' "$OUT/$label.log" | head -3 | sed 's/^/      ⚠ /'
+    echo "   частота ПОСЛЕ прогона:"; gpu_state
 }
 
 command -v glmark2-es2 >/dev/null || { echo "нет glmark2-es2 (Debian: пакет glmark2)"; exit 1; }
