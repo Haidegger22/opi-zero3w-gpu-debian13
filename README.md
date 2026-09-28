@@ -218,6 +218,10 @@ PowerVR BXM-4-64 аппаратно умеет **Vulkan, OpenGL ES (EGL-путь
 > (`glxgears`, `glxdemo`): `abort()` внутри вендорского шейдерного компилятора, трейс через gdb
 > в документе. Рецепт, замеры, методика и грабли: [`docs/OPENGL-ZINK.md`](docs/OPENGL-ZINK.md),
 > скрипты — `scripts/opengl-zink-{install,env,verify,bench}.sh`.
+>
+> Готовые, но **не отправленные** обращения в upstream — `docs/upstream/` (в Mesa: привязка
+> поддержки `GL_QUADS` к опрошенному биту `geometryShader`; в репозиторий слоя: измеренный
+> случай их же предупреждения о риске `PVR_FAKE_GS`).
 
 | Программа | Как | Статус |
 |---|---|---|
