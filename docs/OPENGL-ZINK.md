@@ -35,6 +35,13 @@ glx: failed to create dri3 screen
 Vendor: Mesa, Device: llvmpipe (LLVM 19.1.7, 128 bits), Accelerated: no
 ```
 
+⚠️ **Про это сообщение.** `glx: failed to create dri3 screen` относится к **софтверному** пути
+(Mesa пытается поднять DRI3-экран для llvmpipe), а не к отсутствию DRI3 в системе. Сам X-сервер
+DRI3 **имеет**: `xdpyinfo` показывает расширения `DRI3`, `Present`, `DRI2` (28 расширений всего),
+а в рабочем zink-окружении `glxinfo -B` выдаёт `direct rendering: Yes` и никакого сообщения про
+dri3 нет. То есть на DRI3 не построен именно безслойный софтверный путь — и это **не** причина
+падений, о которых речь в §5.
+
 До слоя Mesa прямо говорит, почему уходит в софт:
 
 ```
@@ -226,7 +233,10 @@ Thread 8 "glxgears:gdrv0" received signal SIGABRT, Aborted.
 ```
 
 Аварийное завершение приходит из **вендорского шейдерного компилятора** (`libufwriter.so`,
-`BILParseStream` — часть стека Imagination), вызванного из Mesa, на потоке драйвера `gdrv0`.
+`BILParseStream` — часть стека Imagination), вызванного из Mesa, на потоке драйвера `gdrv0`
+(это поток threaded-контекста Mesa: по кадрам видно, что он разбужен выдачей кадра —
+`kopperSwapBuffersWithDamage()` → `dri_flush()`, то есть компиляция отложенного шейдера
+происходит во время flush). Трейс воспроизводился дважды на этой же плате.
 То есть падает **блоб**, а не слой и не zink: слой лишь доводит процесс до этого места (без
 него zink не инициализируется вовсе). Точный путь по этому стеку не разводится — кадры
 `libgallium` без символов, и как доказательство «это презентация в X11» они не годятся.
@@ -235,8 +245,21 @@ Thread 8 "glxgears:gdrv0" received signal SIGABRT, Aborted.
 - `vblank_mode=0` (без vsync) — падает так же, значит дело не в обмене буферов с синхронизацией;
 - **слой валидации Khronos** (`vulkan-validationlayers`), подключённый правильно, до падения
   **никаких ошибок Vulkan API не сообщает** — то есть это не misuse API, а внутренний abort драйвера;
-- отсутствие DRI3 (в базовой линии `glx: failed to create dri3 screen` при **софтверном**
-  рендере) само по себе оконный GL не блокирует — доказано работающими `glmark2` и `glxheads`.
+- **DRI3 у X-сервера есть, и дело не в нём.** `xdpyinfo`: расширения `DRI3`, `Present`, `DRI2`;
+  в рабочем zink-окружении `glxinfo -B` — `direct rendering: Yes`. Сообщение
+  `glx: failed to create dri3 screen` появляется в **софтверном** пути (llvmpipe) и при
+  `LIBGL_KOPPER_DISABLE=1`, но не в рабочем zink-окне. Переключатели WSI падение **не** лечат
+  (проверено на плате): `LIBGL_KOPPER_DRI2=1` → SIGABRT, `MESA_VK_WSI_PRESENT_MODE=immediate` →
+  SIGABRT, `LIBGL_KOPPER_DISABLE=1` → SIGSEGV. Переменной `ZINK_WSI` в Mesa не существует вовсе;
+  реально есть `LIBGL_KOPPER_DRI2`, `LIBGL_KOPPER_DISABLE`, `LIBGL_DRI3_DISABLE`,
+  `LIBGL_DRI2_DISABLE`, `MESA_VK_WSI_PRESENT_MODE`, `MESA_VK_WSI_HEADLESS_SWAPCHAIN`. Важно:
+  `LIBGL_KOPPER_DRI2` применим только на Mesa < 25.2 — в 25.2 поддержку DRI2 вырезали.
+- **Как это решают вендор и сообщество.** В `radxa-pkg/allwinner-profiles` для A733 лежит
+  `task-a733-powervr/usr/lib/environment.d/99-powervr-mesa.conf` (`PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1`,
+  `MESA_LOADER_DRIVER_OVERRIDE=zink`, `LIBGL_KOPPER_DRI2=1`), а для Qt —
+  `QT_QPA_OFFSCREEN_NO_GLX=1` и `QSG_RHI_BACKEND=vulkan`, то есть производитель сам уводит
+  приложения от GLX к EGL/Vulkan. Практический вывод для наших задач: **оконные GPU-приложения
+  водить через EGL/Vulkan-клиентов**, а не через legacy-GLX с фиксированным конвейером.
 
 ### Корневая причина падений: geometry-шейдер
 
@@ -404,9 +427,24 @@ PVR_STRIP_DISABLE=1 <app>                                                 # на
 - [`davidhfrankelcodes/pvr-a733-armbian`](https://github.com/davidhfrankelcodes/pvr-a733-armbian)
   (MIT) — второй вариант слоя и лог воспроизведения на Armbian (вариант с блоком
   `device_extensions`, см. §4).
+- [`radxa-pkg/allwinner-profiles`](https://github.com/radxa-pkg/allwinner-profiles) — как это
+  водит вендор: `task-a733-powervr` (zink + `LIBGL_KOPPER_DRI2`) и `task-a733-xorg`
+  (Qt в обход GLX — `QT_QPA_OFFSCREEN_NO_GLX`, `QSG_RHI_BACKEND=vulkan`).
+- Что известно про zink и X11/DRI3 в upstream (проверялось по исходникам и трекерам):
+  [Mesa #13929 «zink: should DRI3 be required?»](https://gitlab.freedesktop.org/mesa/mesa/-/issues/13929),
+  [Mesa #8152 «zink: XWayland support is broken»](https://gitlab.freedesktop.org/mesa/mesa/-/issues/8152),
+  [Mesa #12052 (zink на Pi 4, обход `LIBGL_KOPPER_DRI2`)](https://gitlab.freedesktop.org/mesa/mesa/-/work_items/12052),
+  [Mesa #9903 «kopper: could not create texture from pixmap»](https://gitlab.freedesktop.org/mesa/mesa/-/work_items/9903),
+  [termux-x11 #841](https://github.com/termux/termux-x11/issues/841),
+  [X11Libre #2336](https://github.com/X11Libre/xserver/issues/2336),
+  [выпуск Mesa 25.2 (вырезание DRI2)](https://lists.freedesktop.org/archives/mesa-announce/2025-August/000815.html).
+  Точки в исходниках Mesa 25.0.7, где выбирается путь без DRI3: `src/glx/glxext.c:1046-1055`
+  (печатает `DRI3 not available` и возвращает NULL, без abort), `src/egl/drivers/dri2/egl_dri2.c`
+  (`kopper_without_modifiers`), ассерты `src/gallium/drivers/zink/zink_kopper.c:694` и `:40`
+  (в нашем случае не срабатывали).
 - Воспроизведение и проверка на Zero 3W: **28.09.2026**, Зеро (плата) и Джарвис (Pi 5) —
-  сборка слоя, замеры `glxinfo`/`glmark2`/`glxgears`, трейс через gdb, разбор грабель,
-  взаимная сверка документа.
+  сборка слоя, замеры `glxinfo`/`glmark2`/`glxgears`, трейс через gdb, дампы шейдеров,
+  разбор грабель, взаимная сверка документа.
 - **Проприетарные бинарники здесь не публикуются** (DDK, `libVK_IMG.so`, firmware, `pvrsrvkm.ko`):
   они берутся из образа/репозитория производителя, см. основной README.
 - Чужие документы целиком не копируются — только ссылки и выводы, с указанием авторства (MIT).
