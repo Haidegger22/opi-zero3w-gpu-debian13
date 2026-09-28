@@ -138,7 +138,7 @@ ls /dev/dri/             # card0, card1, renderD128
 | **OpenGL ES 3.2** | ✅ аппаратный | Imagination Technologies (EGL-путь) |
 | **OpenCL 3.0** | ✅ аппаратный | PowerVR BXM-4-64 |
 | **GLX (desktop OpenGL)** | ⚠️ llvmpipe (софт) | **это норма** для PowerVR — так же на 4 Pro |
-| **Desktop-OpenGL через zink** | ✅ аппаратный (off-screen/EGL) | нужен слой feature-strip → [`docs/OPENGL-ZINK.md`](docs/OPENGL-ZINK.md); окна через GLX по-прежнему нет |
+| **Desktop-OpenGL через zink** | ✅ аппаратный (off-screen/EGL), ❌ в окне | нужен слой feature-strip → [`docs/OPENGL-ZINK.md`](docs/OPENGL-ZINK.md); окна через GLX нет (zink в окне падает) |
 | GNOME Wayland | ❌ | нет `EGL_KHR_platform_wayland` у проприетарного EGL |
 
 ---
@@ -213,8 +213,9 @@ PowerVR BXM-4-64 аппаратно умеет **Vulkan, OpenGL ES (EGL-путь
 > через **zink** (GL поверх Vulkan) и слой **feature-strip**, который подделывает
 > `geometryShader`, отсутствующий у вендорского блоба. Тогда `glxinfo -B` показывает
 > `zink Vulkan 1.3(PowerVR B-Series BXM-4-64 MC1)`, GL 2.1 аппаратно. Работает для
-> приложений с off-screen/EGL; **окно через GLX всё равно невозможно** (у X-сервера нет
-> подходящих визуалов). Рецепт, замеры и грабли: [`docs/OPENGL-ZINK.md`](docs/OPENGL-ZINK.md),
+> приложений с **off-screen/EGL**; **в окне не работает** (проверено: `glxgears` со слоем
+> падает с SIGABRT, софтверный — честно рисует 167,9 FPS; у X-сервера нет DRI3/kmsro).
+> Рецепт, замеры и грабли: [`docs/OPENGL-ZINK.md`](docs/OPENGL-ZINK.md),
 > скрипты — `scripts/opengl-zink-{install,env,verify}.sh`.
 
 | Программа | Как | Статус |

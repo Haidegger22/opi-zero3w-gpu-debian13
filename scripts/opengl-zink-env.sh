@@ -9,6 +9,14 @@
 # Требуется установленный слой VK_LAYER_PVR_strip (scripts/opengl-zink-install.sh).
 # Проверено на Zero 3W 28.09.2026 (Debian 13 trixie, Mesa 25.0.7, DDK 24.2.6603887).
 #
+# ВАЖНО, ОБЛАСТЬ ДЕЙСТВИЯ: PVR_FAKE_GS нельзя выставлять глобально (в ~/.profile,
+# autostart, окружении systemd). Переменная говорит ЛЮБОМУ Vulkan-приложению, что
+# geometryShader доступен; приложение, которое на это поверит и создаст настоящий
+# GS-конвейер, уронит блоб PowerVR. Включайте её только на конкретный запуск.
+# Если слой установлен как implicit (как делает install.sh), хватает одной переменной:
+#     PVR_FAKE_GS=1 glxinfo -B
+# VK_LAYER_PATH/VK_INSTANCE_LAYERS ниже нужны лишь для explicit-подключения.
+#
 # Почему такой набор переменных:
 #   PVR_FAKE_GS=1                  — включает слой (он подделывает geometryShader для zink);
 #   GALLIUM_DRIVER/MESA_LOADER_..  — заставляем Mesa взять zink, а не llvmpipe;

@@ -1,14 +1,14 @@
 # Аппаратный Desktop-OpenGL на Zero 3W — zink поверх PowerVR Vulkan
 
-> Как из «GLX всегда llvmpipe» получить **аппаратный desktop OpenGL**: zink (GL поверх Vulkan)
-> + слой `VK_LAYER_PVR_strip`, который снимает два несовместимых требования.
+> Как из «GLX всегда llvmpipe» получить **аппаратный рендерер desktop OpenGL**: zink
+> (GL поверх Vulkan) + слой `VK_LAYER_PVR_strip`, снимающий два несовместимых требования.
 > Проверено на Zero 3W: **28.09.2026**, Debian 13 trixie, ядро `6.6.98-sun60iw2`,
 > Mesa `25.0.7-2+deb13u1`, вендорский DDK `24.2.6603887`, gcc 14.2.
 
-> ⚠️ Это **дополнение** к основному README. Он остаётся верным: вендорский стек даёт
-> аппаратные Vulkan / GLES(EGL) / OpenCL, а **GLX-окно** у проприетарного драйвера как не
-> работало, так и не работает. Новое здесь только одно: сам **рендерер** desktop-OpenGL
-> может быть аппаратным (zink), если приложению достаточно off-screen/EGL.
+> ⚠️ **Главное, что нужно понимать до чтения:** аппаратный рендерер включается, но **работает
+> только для off-screen/EGL**. Вывод в **окно** на этой плате не работает: у X-сервера нет
+> DRI3/kmsro (`glx: failed to create dri3 screen`), поэтому `glxgears` со слоем **падает**
+> (SIGABRT), а софтверный — честно рисует 168 FPS. Подробности и цифры — §1 и §5.
 
 ---
 
@@ -17,15 +17,28 @@
 | Проверка | До слоя | После слоя |
 |---|---|---|
 | `glxinfo -B` → renderer | `llvmpipe (LLVM 19.1.7, 128 bits)` | `zink Vulkan 1.3(PowerVR B-Series BXM-4-64 MC1 (IMAGINATION_PROPRIETARY))` |
-| `glxinfo -B` → version | `4.5 (Compatibility Profile) Mesa 25.0.7` | `2.1 Mesa 25.0.7` (**аппаратно**) |
-| `GL_RENDERER` (EGL) | PowerVR B-Series BXM-4-64 | PowerVR B-Series BXM-4-64 |
+| `glxinfo -B` → version | `4.5 (Compatibility Profile) Mesa 25.0.7` | `2.1 Mesa 25.0.7-2+deb13u1` |
+| `GL_RENDERER` (EGL, вендорский стек) | PowerVR B-Series BXM-4-64 | PowerVR B-Series BXM-4-64 (не меняется: это не Mesa, а блоб из `/usr/local`) |
+| `Accelerated` (GLX_MESA_query_renderer) | `no` | — (zink ядро отдаёт профиль 2.1, ускорение не заявляет) |
+| **Окно** (`glxgears -info`) | ✅ 167,9 FPS (софт) | ❌ **SIGABRT до первого интервала FPS** |
 | `vulkaninfo --summary` | PowerVR, 1.3.277 | PowerVR, 1.3.277 |
+
+То есть: **контекст и рендер — аппаратные (zink → PowerVR), оконный вывод — не работает.**
+`glxinfo -B` сам по себе окно не проверяет: он создаёт контекст и читает строки, поэтому его
+успех не доказывает работоспособность окна. Доказательство — `glxgears` (§5).
+
+Натуральная «база» (без слоя и **без принудительного софта**) на нашей плате:
+
+```
+glx: failed to create dri3 screen
+Vendor: Mesa, Device: llvmpipe (LLVM 19.1.7, 128 bits), Accelerated: no
+OpenGL renderer string: llvmpipe (LLVM 19.1.7, 128 bits)
+```
 
 До слоя Mesa прямо говорит, почему уходит в софт:
 
 ```
 MESA: error: zink: Imagination proprietary driver w/o geometryShader is unsupported
-libEGL warning: egl: failed to create dri2 screen
 ```
 
 ## 2. Почему без слоя не получается
@@ -35,16 +48,23 @@ libEGL warning: egl: failed to create dri2 screen
 2. **zink — единственный мост** «GL → Vulkan», но он требует
    `VkPhysicalDeviceFeatures.geometryShader`, а блоб PowerVR сообщает по нему `false`.
    Без этого бита zink отказывается инициализироваться (строка выше) и Mesa падает в llvmpipe.
-3. **Вендорский GL-блоб для окна не годится:** его `libEGL`/`pvr_dri.so` из `/usr/local`
-   вешают инициализацию графики у GLX-приложений (у Wine это `err:wgl:internal_context_create`
-   и зависший `wineboot`). Трогать его не нужно — маршрут другой.
-4. **Решение (внешнее):** Vulkan-слой, который **на опросе** сообщает, что `geometryShader`
+   Проверено отрицательным контролем: то же окружение zink без `PVR_FAKE_GS=1` даёт повтор
+   `MESA: error: zink: Imagination proprietary driver w/o geometryShader is unsupported`
+   и **никакого** аппаратного рендерера.
+3. **Решение (внешнее):** Vulkan-слой, который **на опросе** сообщает, что `geometryShader`
    есть, а перед `vkCreateDevice` **вырезает** этот бит из запроса — блоб никогда не просят
    включить то, чего у него нет. Второй бит, `VK_EXT_robustness2.nullDescriptor`, нужен только
-   свежему zink (Mesa ≥ 26) и включается отдельно — см. грабли.
+   свежему zink (Mesa ≥ 26) и включается отдельно — см. §6.
+
+Отдельно, чтобы не смешивать: **вендорский GL-блоб** (`libEGL`/`pvr_dri.so` из `/usr/local`)
+ломает создание GL-контекста в приложениях — у Wine это `err:wgl:internal_context_create`.
+Зависание `wineboot` — **другая история** (пустой реестр профиля: ноль `InprocServer32`,
+незапускающийся `RpcSs`, незарегистрированный `MMDeviceEnumerator`) и разобрано в соседнем
+репозитории: [`opi-zero-3w-disciples2`](https://github.com/Haidegger22/opi-zero-3w-disciples2),
+там же `reg/rpcss-service.reg` и `scripts/fix-rpcss-service.sh`.
 
 Автор рецепта и среды сборки слоя — внешний проект, мы воспроизвели и проверили на плате
-(раздел «Источники и авторство»).
+(§9 «Источники и авторство»).
 
 ## 3. Установка
 
@@ -58,14 +78,15 @@ git clone -b trixie https://github.com/ayiejosh/a733-powervr-fex.git ~/pvr-work/
 # 2) сборка + установка (кладутся только манифест и .so в домашний каталог)
 cd ~/pvr-work/a733-powervr-fex/gpu/vk-feature-strip
 ./install.sh
-#   → ~/.local/share/vulkan/implicit_layer.d/libVkLayer_PVR_strip.so
-#     ~/.local/share/vulkan/implicit_layer.d/VkLayer_PVR_strip.json
+#   → ${XDG_DATA_HOME:-$HOME/.local/share}/vulkan/implicit_layer.d/libVkLayer_PVR_strip.so
+#     ${XDG_DATA_HOME:-$HOME/.local/share}/vulkan/implicit_layer.d/VkLayer_PVR_strip.json
 ```
 
 То же самое делает наш скрипт (плюс проверка результата сразу после установки):
 
 ```bash
 scripts/opengl-zink-install.sh            # клонировать/обновить слой, собрать, установить, проверить
+scripts/opengl-zink-install.sh --check    # только предпосылки и коллизии имён
 scripts/opengl-zink-install.sh --uninstall
 ```
 
@@ -77,7 +98,31 @@ scripts/opengl-zink-install.sh --uninstall
 
 ## 4. Включение и проверка
 
-**Наш проверенный вариант** (полное окружение, так сняты все замеры ниже):
+**Проверено на плате 28.09.2026:** при implicit-установке (манифест в
+`~/.local/share/vulkan/implicit_layer.d`, есть `enable_environment` + `disable_environment`)
+**достаточно одной переменной**:
+
+```bash
+PVR_FAKE_GS=1 glxinfo -B        # → zink Vulkan 1.3(PowerVR B-Series BXM-4-64 MC1 ...)
+```
+
+Замерено: `VK_LAYER_PATH` и `VK_INSTANCE_LAYERS` при этом **не выставлялись**. Тот же запуск
+без `PVR_FAKE_GS` даёт ошибку zink про `geometryShader` (см. §2.2) — то есть работает именно
+слой, а не совпадение.
+
+**Вариант с явным подключением** (если слой установлен как *explicit*, например манифест
+только через `VK_LAYER_PATH`) — нужны уже три переменные, потому что explicit-слой не
+включается автоматически:
+
+```bash
+PVR_FAKE_GS=1 \
+VK_LAYER_PATH=$HOME/.local/share/vulkan/implicit_layer.d \
+VK_INSTANCE_LAYERS=VK_LAYER_PVR_strip \
+glxinfo -B
+```
+
+Полное рабочее окружение (в нём сняты замеры, включая `glmark2` эталона) —
+`scripts/opengl-zink-env.sh`; проверка «до/после» — `scripts/opengl-zink-verify.sh`:
 
 ```bash
 env -u LD_LIBRARY_PATH \
@@ -91,11 +136,7 @@ env -u LD_LIBRARY_PATH \
     DISPLAY=:0 glxinfo -B
 ```
 
-Ждём в выводе:
-`OpenGL renderer string: zink Vulkan 1.3(PowerVR B-Series BXM-4-64 MC1 (IMAGINATION_PROPRIETARY))`.
-
-Окружение без повторения руками — в `scripts/opengl-zink-env.sh` (`. scripts/opengl-zink-env.sh`),
-полная проверка «до/после» — `scripts/opengl-zink-verify.sh`.
+Ждём: `OpenGL renderer string: zink Vulkan 1.3(PowerVR B-Series BXM-4-64 MC1 (IMAGINATION_PROPRIETARY))`.
 
 **Доказать, что загрузился именно слой:**
 
@@ -103,29 +144,53 @@ env -u LD_LIBRARY_PATH \
 VK_LOADER_DEBUG=layer PVR_FAKE_GS=1 <ваше GL-приложение> 2>&1 | grep -i pvr_strip
 ```
 
-**Вариант «одной переменной»** (по документации слоя: манифест установлен как *implicit*,
-поэтому достаточно `PVR_FAKE_GS=1 <app>`) — на нашей плате он проходит, но замеры сняты
-полным окружением выше.
+На нашей плате это даёт `Found manifest file …/implicit_layer.d/VkLayer_PVR_strip.json`.
 
-### Способы включения и их ловушки
+### Ловушки манифеста (каждая стоила отладки)
 
-| Способ | Как | Нюанс |
+| Ловушка | Что происходит |
+|---|---|
+| нет `disable_environment` в implicit-манифесте | лоадер молча пропускает слой: `Didn't find required layer object disable_environment in manifest JSON file, skipping this layer` |
+| **есть блок `device_extensions` с `VK_EXT_robustness2`** | лоадер подмешивает расширение приложениям **независимо** от `PVR_FAKE_R2`, и `vkCreateDevice` падает с `VK_ERROR_FEATURE_NOT_PRESENT` (замер: 115 расширений вместо 114) |
+| два манифеста с одним именем | выбран будет один, переменные второго молча проигнорированы |
+| `VK_LAYER_PATH` без `VK_INSTANCE_LAYERS` | explicit-слой не поднимается: результат как без слоя вообще |
+
+⚠️ Про `device_extensions` — это **не гипотеза**: из двух опубликованных реализаций блок
+`device_extensions` с `VK_EXT_robustness2` реально прописан в манифесте варианта
+[`davidhfrankelcodes/pvr-a733-armbian`](https://github.com/davidhfrankelcodes/pvr-a733-armbian),
+а в варианте [`ayiejosh/a733-powervr-fex`](https://github.com/ayiejosh/a733-powervr-fex) —
+нет. Мы берём слой из второго. Если по недоразумению взяли первый — **удалите блок
+`device_extensions`** из манифеста, иначе приложение получит `VK_ERROR_FEATURE_NOT_PRESENT`.
+
+### Способы включения и отключения
+
+| Способ | Как | Когда нужен |
 |---|---|---|
-| implicit (**рекомендуется**) | `./install.sh` → манифест в `~/.local/share/vulkan/implicit_layer.d/` → `PVR_FAKE_GS=1 <app>` | у implicit-манифеста **обязателен** `disable_environment`, иначе лоадер молча пропускает слой (`Didn't find required layer object disable_environment ... skipping`) |
-| explicit | `VK_LAYER_PATH=<каталог> VK_INSTANCE_LAYERS=VK_LAYER_PVR_strip PVR_FAKE_GS=1 <app>` | explicit-слой не включается сам: `enable_environment` для него не работает, имя обязательно в `VK_INSTANCE_LAYERS` |
-| выключить на процесс | `PVR_STRIP_DISABLE=1 <app>` | — |
-| снять совсем | `.../vk-feature-strip/install.sh --uninstall` | удаляет `.so` + манифест, всё в `$HOME` |
+| implicit (**рекомендуется**) | `./install.sh` → `PVR_FAKE_GS=1 <app>` | обычный случай (проверено) |
+| explicit | `VK_LAYER_PATH=<каталог> VK_INSTANCE_LAYERS=VK_LAYER_PVR_strip PVR_FAKE_GS=1 <app>` | если манифест не установлен как implicit |
+| выключить на процесс | `PVR_STRIP_DISABLE=1 <app>` | разовая проверка |
+| снять совсем | `.../vk-feature-strip/install.sh --uninstall` | откат |
 
-Ещё две ловушки манифеста (обе стоили отладки на `libvulkan1 1.4.309`):
+### ⚠️ Область действия `PVR_FAKE_GS` — не «на всю сессию»
 
-- не перечислять `VK_EXT_robustness2` в `device_extensions` манифеста: лоадер добавит его
-  приложениям **независимо от переключателя**, и `vkCreateDevice` упадёт с
-  `VK_ERROR_FEATURE_NOT_PRESENT` (замер: 115 расширений вместо 114);
-- имя слоя одно: два манифеста с одним именем → выбран будет один.
+Не выставляйте `PVR_FAKE_GS` глобально (`~/.profile`, autostart, окружение systemd).
+Переменная говорит **любому** Vulkan-приложению, что `geometryShader` доступен; приложение,
+которое на это поверит и создаст настоящий GS-конвейер, уронит блоб. Слой инертен ровно до тех
+пор, пока переменной нет — поэтому включать её только на конкретный запуск.
+
+И наоборот: `LIBGL_ALWAYS_SOFTWARE=1` для рабочего стола — часть защиты от дедлока ядра
+(§6), её нельзя «заодно почистить» вместе с остальными переменными.
 
 ## 5. Замеры
 
-**Наш Zero 3W** (28.09.2026) — строки `glxinfo -B`, см. таблицу в разделе 1.
+**Наш Zero 3W (28.09.2026):**
+
+| Тест | Без слоя | Со слоем (zink) |
+|---|---|---|
+| `glxinfo -B` renderer | llvmpipe (LLVM 19.1.7), GL 4.5 | zink Vulkan 1.3(PowerVR B-Series BXM-4-64 MC1), GL 2.1 |
+| `glxgears -info` (реальное окно + обмен буферов) | ✅ 840 / 841 frames in 5.0 s = **167,9 FPS** | ❌ **SIGABRT (код 134)** до первого интервала FPS, только предупреждение про `fillModeNonSolid` |
+| `VK_LOADER_DEBUG` | слой не найден | `Found manifest file …/VkLayer_PVR_strip.json` |
+| ядро после опытов | — | без ошибок `pvrsrvkm`, дедлока нет (uptime не сброшен) |
 
 **Референсная плата с той же GPU и тем же DDK** (Radxa Cubie A7A, Debian 13 trixie,
 `glmark2-es2 --off-screen -b build:duration=2`):
@@ -139,12 +204,16 @@ VK_LOADER_DEBUG=layer PVR_FAKE_GS=1 <ваше GL-приложение> 2>&1 | gr
 | вендорский GLES (стоковые 600 МГц) | **659** |
 | `PVR_FAKE_GS=1 PVR_FAKE_R2=1` | **SIGSEGV** внутри `libVK_IMG.so` (без падения ядра) |
 
-Вывод: аппаратный GL через zink даёт примерно **70 %** от вендорского GLES на той же плате.
-Потолок аппаратного GL на этом блобе — **GL 2.1 / GLES 2.0**.
+Вывод: аппаратный GL через zink даёт примерно **70 %** от вендорского GLES на той же плате,
+и только в off-screen-режиме. Потолок аппаратного GL на этом блобе — **GL 2.1 / GLES 2.0**.
 
 ## 6. Грабли (каждая проверена и стоила времени)
 
-- **`zink` без слоя не стартует** — `geometryShader` у блоба `false`.
+- **`zink` без слоя не стартует** — `geometryShader` у блоба `false` (§2.2).
+- **В окне аппаратный GL не работает.** Причина не в слое: у X-сервера нет DRI3/kmsro
+  (`glx: failed to create dri3 screen` в базовой линии), а рабочий стол у нас намеренно
+  программный. Итог: `glxinfo`/`glmark2 --off-screen` — да, окно — нет (`glxgears` падает
+  с SIGABRT, см. §5).
 - **`fillModeNonSolid` у блоба нет.** zink предупреждает об этом при инициализации: сплошная
   заливка рисуется корректно, каркас и неполная заливка (`glPolygonMode`) — ненадёжны.
 - **Mesa ≥ 26 не обновлять.** zink 26+ требует `VK_EXT_robustness2.nullDescriptor`, а блоб
@@ -154,12 +223,8 @@ VK_LOADER_DEBUG=layer PVR_FAKE_GS=1 <ваше GL-приложение> 2>&1 | gr
   (`mutex_spin_on_owner` в IRQ → лечится только power-cycle). Поэтому программный рабочий стол
   и `LIBGL_ALWAYS_SOFTWARE=1` — это **защита, а не костыль**: не включать glamor, не поднимать
   Wayland-композитор на GPU, **не ставить `DXVK_HUD`** (тот же класс отказа).
-- **GLX-окно не поднимается**: у X-сервера нет подходящих визуалов
-  (`couldn't get an RGB double-buffered visual`). Доступен только off-screen/EGL. После
-  успешного определения рендерера `eglinfo` всё равно заканчивается `eglInitialize failed` —
-  это не дефект слоя, а следующая стена.
 - **Двойная Mesa.** Вендорский стек в `/usr/local` имеет приоритет по `ldconfig`, поэтому
-  путь zink обязан запускаться со scoped `LD_LIBRARY_PATH` на системную Mesa (в блоке выше —
+  путь zink обязан запускаться со scoped `LD_LIBRARY_PATH` на системную Mesa (в блоке §4 —
   `env -u LD_LIBRARY_PATH LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:...`).
 - **Блоб сообщает 114 device extensions** и не имеет `descriptor_buffer`, resizable BAR и
   `non_seamless_cube_map` — отсюда вывод «просто поставить новее Mesa» ничего не даёт.
@@ -172,14 +237,15 @@ VK_LOADER_DEBUG=layer PVR_FAKE_GS=1 <ваше GL-приложение> 2>&1 | gr
 
 ## 7. Что это даёт и чего не даёт
 
-- ✅ **Аппаратный desktop OpenGL** приложениям, которым достаточно **off-screen/EGL**
-  (рендер в FBO, headless-сцены, GL-вычисления). Быстрее llvmpipe.
-- ✅ Потолок **GL 2.1 / GLES 2.0** — этого хватает 2D-графике и старому софту, но не
-  современным GL-играм.
-- ❌ **Окно через GLX** — нет (нет визуалов у X-сервера). Приложения с окном идут другим
-  маршрутом.
+- ✅ **Аппаратный рендерер desktop OpenGL** приложениям, которым достаточно
+  **off-screen/EGL** (рендер в FBO, headless-сцены, GL-вычисления).
+- ⚖️ **Быстрее — но уже.** zink даёт **GL 2.1**, llvmpipe — **GL 4.5**. Приложение,
+  которому нужен GL ≥ 3.x, со zink просто не запустится; для такого остаётся софт-путь
+  (медленнее, зато 4.5). Выбор делается под задачу.
+- ❌ **Окно** — не работает (`glxgears` со слоем падает; нет DRI3/kmsro). Приложения с окном
+  идут другим маршрутом.
 - ❌ **Игры с окном — это не GL, а Direct3D**: route = DXVK-Sarek (arm64ec) поверх того же
-  Vulkan + этот же слой. Тот же слой обязателен, `DXVK_HUD` — нельзя.
+  Vulkan + этот же слой; тот же слой обязателен, `DXVK_HUD` — нельзя.
 - ❌ **GPU-композитор и GPU-рабочий стол** — нельзя (дедлок ядра).
 
 ### Практический пример: Disciples II (DirectDraw, 2D)
@@ -200,12 +266,11 @@ VK_LOADER_DEBUG=layer PVR_FAKE_GS=1 <ваше GL-приложение> 2>&1 | gr
 ## 8. Откат
 
 ```bash
-PVR_STRIP_DISABLE=1 <app>                                        # на один процесс
-~/pvr-work/a733-powervr-fex/gpu/vk-feature-strip/install.sh --uninstall   # снять слой совсем
+PVR_STRIP_DISABLE=1 <app>                                                 # на один процесс
+~/pvr-work/a733-powervr-fex/gpu/vk-feature-strip/install.sh --uninstall    # снять слой совсем
 ```
 
 Вне `$HOME` ничего не меняется: без `PVR_FAKE_GS=1` слой инертен, манифест можно просто удалить.
-Замеры и скриншоты — в репозитории игры, раздел графики.
 
 ## 9. Источники и авторство
 
@@ -213,9 +278,10 @@ PVR_STRIP_DISABLE=1 <app>                                        # на один
   (MIT) — рецепт zink для trixie, исходник слоя (`gpu/vk-feature-strip/`), разбор стен:
   `docs/FINDINGS.md`, `gpu/zink-trixie.md`, `docs/GPU-RESEARCH-2026-09-22.md`.
 - [`davidhfrankelcodes/pvr-a733-armbian`](https://github.com/davidhfrankelcodes/pvr-a733-armbian)
-  (MIT) — второй вариант слоя и лог воспроизведения на Armbian.
+  (MIT) — второй вариант слоя и лог воспроизведения на Armbian (вариант с блоком
+  `device_extensions`, см. §4).
 - Воспроизведение и проверка на Zero 3W: **28.09.2026**, Зеро (плата) и Джарвис (Pi 5) —
-  сборка слоя, замеры, разбор грабель.
+  сборка слоя, замеры `glxinfo`/`glxgears`/`glmark2`, разбор грабель, взаимная сверка документа.
 - **Проприетарные бинарники здесь не публикуются** (DDK, `libVK_IMG.so`, firmware, `pvrsrvkm.ko`):
   они берутся из образа/репозитория производителя, см. основной README.
 - Чужие документы целиком не копируются — только ссылки и выводы, с указанием авторства (MIT).
