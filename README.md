@@ -113,6 +113,9 @@ glxinfo | grep renderer  # llvmpipe — НОРМА (см. «Нюансы PowerVR
 ls /dev/dri/             # card0, card1, renderD128
 ```
 
+> Аппаратный *рендерер* desktop-OpenGL (zink) включается отдельно — [`docs/OPENGL-ZINK.md`](docs/OPENGL-ZINK.md):
+> `scripts/opengl-zink-verify.sh` покажет `llvmpipe` без слоя и `zink Vulkan 1.3(PowerVR …)` со слоем.
+
 ### Шаг 7. Перезагрузка
 
 После ребута модуль ядра `pvrsrvkm` грузится сам (по modalias устройства
@@ -135,6 +138,7 @@ ls /dev/dri/             # card0, card1, renderD128
 | **OpenGL ES 3.2** | ✅ аппаратный | Imagination Technologies (EGL-путь) |
 | **OpenCL 3.0** | ✅ аппаратный | PowerVR BXM-4-64 |
 | **GLX (desktop OpenGL)** | ⚠️ llvmpipe (софт) | **это норма** для PowerVR — так же на 4 Pro |
+| **Desktop-OpenGL через zink** | ✅ аппаратный (off-screen/EGL) | нужен слой feature-strip → [`docs/OPENGL-ZINK.md`](docs/OPENGL-ZINK.md); окна через GLX по-прежнему нет |
 | GNOME Wayland | ❌ | нет `EGL_KHR_platform_wayland` у проприетарного EGL |
 
 ---
@@ -202,8 +206,16 @@ sudo tar czf /tmp/pvr-stack.tar.gz \
 ## Что реально ускоряется аппаратно
 
 PowerVR BXM-4-64 аппаратно умеет **Vulkan, OpenGL ES (EGL-путь) и OpenCL**.
-**Desktop OpenGL через GLX — нет в принципе** (всегда llvmpipe). Это не баг
+**Desktop OpenGL через GLX в окне — нет** (в приложении с окном это llvmpipe). Это не баг
 установки, а свойство драйвера Imagination — на 4 Pro ровно так же.
+
+> 🌟 **Новое (28.09.2026):** *рендерер* desktop-OpenGL тоже можно сделать аппаратным —
+> через **zink** (GL поверх Vulkan) и слой **feature-strip**, который подделывает
+> `geometryShader`, отсутствующий у вендорского блоба. Тогда `glxinfo -B` показывает
+> `zink Vulkan 1.3(PowerVR B-Series BXM-4-64 MC1)`, GL 2.1 аппаратно. Работает для
+> приложений с off-screen/EGL; **окно через GLX всё равно невозможно** (у X-сервера нет
+> подходящих визуалов). Рецепт, замеры и грабли: [`docs/OPENGL-ZINK.md`](docs/OPENGL-ZINK.md),
+> скрипты — `scripts/opengl-zink-{install,env,verify}.sh`.
 
 | Программа | Как | Статус |
 |---|---|---|
@@ -217,6 +229,8 @@ PowerVR BXM-4-64 аппаратно умеет **Vulkan, OpenGL ES (EGL-путь
 
 - **GLX-приложения** (старый desktop OpenGL): рендер софтовый (llvmpipe).
   Пример: VCMI (Герои III) — 2D-изометрия, софта хватает с запасом.
+  Аппаратного рендерера в окне у PowerVR по-прежнему нет; аппаратный **рендерер**
+  (zink, off-screen/EGL) — [`docs/OPENGL-ZINK.md`](docs/OPENGL-ZINK.md).
 - **Flutter-приложения** (FlClashX и т.п.): PVR-враппер `libEGL` из `/usr/local/lib`
   не умеет NPOT-текстуры → чёрное окно. Лечится запуском с системной mesa:
   ```bash
@@ -273,3 +287,6 @@ PowerVR BXM-4-64 аппаратно умеет **Vulkan, OpenGL ES (EGL-путь
   — адаптация репозиториев Zero 3W под Debian 13
 - [`opi-zero3w-flclashx-debian13`](https://github.com/Haidegger22/opi-zero3w-flclashx-debian13)
   — FlClashX на Debian 13 (чёрное окно Flutter → фикс EGL)
+- [`opi-zero-3w-disciples2`](https://github.com/Haidegger22/opi-zero-3w-disciples2)
+  — Disciples II на Wine: служба RpcSs и COM-классы, звук, полный экран и разбор
+  попыток аппаратного рендера ([`docs/RENDERER-EXPERIMENTS.md`](https://github.com/Haidegger22/opi-zero-3w-disciples2/blob/main/docs/RENDERER-EXPERIMENTS.md))
