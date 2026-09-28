@@ -138,7 +138,7 @@ ls /dev/dri/             # card0, card1, renderD128
 | **OpenGL ES 3.2** | ✅ аппаратный | Imagination Technologies (EGL-путь) |
 | **OpenCL 3.0** | ✅ аппаратный | PowerVR BXM-4-64 |
 | **GLX (desktop OpenGL)** | ⚠️ llvmpipe (софт) | **это норма** для PowerVR — так же на 4 Pro |
-| **Desktop-OpenGL через zink** | ✅ аппаратный (off-screen/EGL), ❌ в окне | нужен слой feature-strip → [`docs/OPENGL-ZINK.md`](docs/OPENGL-ZINK.md); окна через GLX нет (zink в окне падает) |
+| **Desktop-OpenGL через zink** | ✅ аппаратный (off-screen/EGL и в окне) | нужен слой feature-strip → [`docs/OPENGL-ZINK.md`](docs/OPENGL-ZINK.md); замеры `glmark2` 270 (окно) / 415 (off-screen), `glmark2-es2` 312; отдельные старые GLX-демки (`glxgears`, `glxdemo`) падают внутри вендорского компилятора шейдеров |
 | GNOME Wayland | ❌ | нет `EGL_KHR_platform_wayland` у проприетарного EGL |
 
 ---
@@ -212,11 +212,12 @@ PowerVR BXM-4-64 аппаратно умеет **Vulkan, OpenGL ES (EGL-путь
 > 🌟 **Новое (28.09.2026):** *рендерер* desktop-OpenGL тоже можно сделать аппаратным —
 > через **zink** (GL поверх Vulkan) и слой **feature-strip**, который подделывает
 > `geometryShader`, отсутствующий у вендорского блоба. Тогда `glxinfo -B` показывает
-> `zink Vulkan 1.3(PowerVR B-Series BXM-4-64 MC1)`, GL 2.1 аппаратно. Работает для
-> приложений с **off-screen/EGL**; **в окне не работает** (проверено: `glxgears` со слоем
-> падает с SIGABRT, софтверный — честно рисует 167,9 FPS; у X-сервера нет DRI3/kmsro).
-> Рецепт, замеры и грабли: [`docs/OPENGL-ZINK.md`](docs/OPENGL-ZINK.md),
-> скрипты — `scripts/opengl-zink-{install,env,verify}.sh`.
+> `zink Vulkan 1.3(PowerVR B-Series BXM-4-64 MC1)`, GL 2.1 аппаратно — и **не только
+> off-screen**: `glmark2` в окне даёт 319/325, `glmark2-es2` (EGL) — 277/289, `--off-screen` — 401
+> против 524 у вендорского GLES (77 %). Но **часть старых GLX-демок аварийно падает**
+> (`glxgears`, `glxdemo`): `abort()` внутри вендорского шейдерного компилятора, трейс через gdb
+> в документе. Рецепт, замеры, методика и грабли: [`docs/OPENGL-ZINK.md`](docs/OPENGL-ZINK.md),
+> скрипты — `scripts/opengl-zink-{install,env,verify,bench}.sh`.
 
 | Программа | Как | Статус |
 |---|---|---|

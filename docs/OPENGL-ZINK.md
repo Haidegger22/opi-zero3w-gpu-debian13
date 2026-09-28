@@ -1,14 +1,16 @@
 # Аппаратный Desktop-OpenGL на Zero 3W — zink поверх PowerVR Vulkan
 
-> Как из «GLX всегда llvmpipe» получить **аппаратный рендерер desktop OpenGL**: zink
-> (GL поверх Vulkan) + слой `VK_LAYER_PVR_strip`, снимающий два несовместимых требования.
+> Как из «GLX всегда llvmpipe» получить **аппаратный desktop OpenGL**: zink (GL поверх Vulkan)
+> + слой `VK_LAYER_PVR_strip`, снимающий два несовместимых требования.
 > Проверено на Zero 3W: **28.09.2026**, Debian 13 trixie, ядро `6.6.98-sun60iw2`,
-> Mesa `25.0.7-2+deb13u1`, вендорский DDK `24.2.6603887`, gcc 14.2.
+> Mesa `25.0.7-2+deb13u1`, вендорский DDK `24.2.6603887`, gcc 14.2, gdb 16.3.
 
-> ⚠️ **Главное, что нужно понимать до чтения:** аппаратный рендерер включается, но **работает
-> только для off-screen/EGL**. Вывод в **окно** на этой плате не работает: у X-сервера нет
-> DRI3/kmsro (`glx: failed to create dri3 screen`), поэтому `glxgears` со слоем **падает**
-> (SIGABRT), а софтверный — честно рисует 168 FPS. Подробности и цифры — §1 и §5.
+> ⚠️ **Коротко о результате.** Аппаратный GL через zink работает — и **без окна**
+> (`glmark2-es2 --off-screen`: 401 против 524 у вендорского GLES — 77 %), и **в окне**
+> (`glmark2` через GLX — 319/325, `glmark2-es2` через EGL — 277/289, `glxheads` — работает).
+> Но **часть старых GLX-демок аварийно падает**: `glxgears` и `glxdemo` завершаются SIGABRT
+> **внутри вендорского компилятора шейдеров** — трейс в §5. Это дефект блоба на конкретных
+> пайплайнах, а не отсутствие оконного GL.
 
 ---
 
@@ -18,21 +20,19 @@
 |---|---|---|
 | `glxinfo -B` → renderer | `llvmpipe (LLVM 19.1.7, 128 bits)` | `zink Vulkan 1.3(PowerVR B-Series BXM-4-64 MC1 (IMAGINATION_PROPRIETARY))` |
 | `glxinfo -B` → version | `4.5 (Compatibility Profile) Mesa 25.0.7` | `2.1 Mesa 25.0.7-2+deb13u1` |
-| `GL_RENDERER` (EGL, вендорский стек) | PowerVR B-Series BXM-4-64 | PowerVR B-Series BXM-4-64 (не меняется: это не Mesa, а блоб из `/usr/local`) |
-| `Accelerated` (GLX_MESA_query_renderer) | `no` | — (zink ядро отдаёт профиль 2.1, ускорение не заявляет) |
-| **Окно** (`glxgears -info`) | ✅ 167,9 FPS (софт) | ❌ **SIGABRT до первого интервала FPS** |
+| `GL_RENDERER` (EGL, вендорский стек) | PowerVR B-Series BXM-4-64 | не меняется (это не Mesa, а блоб из `/usr/local`) |
+| `Accelerated` (GLX_MESA_query_renderer) | `no` | zink отдаёт профиль 2.1 |
+| **Окно, GLX** (`glmark2`) | — | ✅ 319 / 325 (аппаратно) |
+| **Окно, EGL/GLES** (`glmark2-es2`) | — | ✅ 277 / 289 (аппаратно) |
+| **Окно, GLX** (`glxgears`) | ✅ 167,9 FPS (софт) | ❌ **SIGABRT** — известный падающий случай, §5 |
+| `glxheads` (GLX, окно) | — | ✅ работает (20 с без падения) |
 | `vulkaninfo --summary` | PowerVR, 1.3.277 | PowerVR, 1.3.277 |
 
-То есть: **контекст и рендер — аппаратные (zink → PowerVR), оконный вывод — не работает.**
-`glxinfo -B` сам по себе окно не проверяет: он создаёт контекст и читает строки, поэтому его
-успех не доказывает работоспособность окна. Доказательство — `glxgears` (§5).
-
-Натуральная «база» (без слоя и **без принудительного софта**) на нашей плате:
+Натуральная «база» (без слоя и **без принудительного софта**):
 
 ```
 glx: failed to create dri3 screen
 Vendor: Mesa, Device: llvmpipe (LLVM 19.1.7, 128 bits), Accelerated: no
-OpenGL renderer string: llvmpipe (LLVM 19.1.7, 128 bits)
 ```
 
 До слоя Mesa прямо говорит, почему уходит в софт:
@@ -49,8 +49,7 @@ MESA: error: zink: Imagination proprietary driver w/o geometryShader is unsuppor
    `VkPhysicalDeviceFeatures.geometryShader`, а блоб PowerVR сообщает по нему `false`.
    Без этого бита zink отказывается инициализироваться (строка выше) и Mesa падает в llvmpipe.
    Проверено отрицательным контролем: то же окружение zink без `PVR_FAKE_GS=1` даёт повтор
-   `MESA: error: zink: Imagination proprietary driver w/o geometryShader is unsupported`
-   и **никакого** аппаратного рендерера.
+   ошибки `w/o geometryShader is unsupported` и **никакого** аппаратного рендерера.
 3. **Решение (внешнее):** Vulkan-слой, который **на опросе** сообщает, что `geometryShader`
    есть, а перед `vkCreateDevice` **вырезает** этот бит из запроса — блоб никогда не просят
    включить то, чего у него нет. Второй бит, `VK_EXT_robustness2.nullDescriptor`, нужен только
@@ -107,12 +106,11 @@ PVR_FAKE_GS=1 glxinfo -B        # → zink Vulkan 1.3(PowerVR B-Series BXM-4-64 
 ```
 
 Замерено: `VK_LAYER_PATH` и `VK_INSTANCE_LAYERS` при этом **не выставлялись**. Тот же запуск
-без `PVR_FAKE_GS` даёт ошибку zink про `geometryShader` (см. §2.2) — то есть работает именно
-слой, а не совпадение.
+без `PVR_FAKE_GS` даёт ошибку zink про `geometryShader` (§2.2) — то есть работает именно слой.
 
-**Вариант с явным подключением** (если слой установлен как *explicit*, например манифест
-только через `VK_LAYER_PATH`) — нужны уже три переменные, потому что explicit-слой не
-включается автоматически:
+**Вариант с явным подключением** (если манифест доступен только как *explicit*) — нужны три
+переменные, потому что explicit-слой не включается автоматически, и помните про замену
+каталогов поиска (таблица ниже):
 
 ```bash
 PVR_FAKE_GS=1 \
@@ -121,14 +119,12 @@ VK_INSTANCE_LAYERS=VK_LAYER_PVR_strip \
 glxinfo -B
 ```
 
-Полное рабочее окружение (в нём сняты замеры, включая `glmark2` эталона) —
-`scripts/opengl-zink-env.sh`; проверка «до/после» — `scripts/opengl-zink-verify.sh`:
+Полное рабочее окружение — `scripts/opengl-zink-env.sh`; проверка «до/после» —
+`scripts/opengl-zink-verify.sh`:
 
 ```bash
 env -u LD_LIBRARY_PATH \
     PVR_FAKE_GS=1 \
-    VK_LAYER_PATH=$HOME/.local/share/vulkan/implicit_layer.d \
-    VK_INSTANCE_LAYERS=VK_LAYER_PVR_strip \
     GALLIUM_DRIVER=zink MESA_LOADER_DRIVER_OVERRIDE=zink \
     LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu \
     LIBGL_DRIVERS_PATH=/usr/lib/aarch64-linux-gnu/dri \
@@ -159,6 +155,7 @@ VK_LOADER_DEBUG=layer PVR_FAKE_GS=1 <ваше GL-приложение> 2>&1 | gr
 | **есть блок `device_extensions` с `VK_EXT_robustness2`** | лоадер подмешивает расширение приложениям **независимо** от `PVR_FAKE_R2`, и `vkCreateDevice` падает с `VK_ERROR_FEATURE_NOT_PRESENT` (замер: 115 расширений вместо 114) |
 | два манифеста с одним именем | выбран будет один, переменные второго молча проигнорированы |
 | `VK_LAYER_PATH` без `VK_INSTANCE_LAYERS` | explicit-слой не поднимается: результат как без слоя вообще |
+| **`VK_LAYER_PATH` ЗАМЕНЯЕТ стандартные каталоги explicit-слоёв, а не дополняет их** | пока переменная выставлена, для процесса **невидимы любые чужие explicit-слои**: валидация, RenderDoc, MangoHud отвечают `Layer "VK_LAYER_KHRONOS_validation" was not found but was requested by env var VK_INSTANCE_LAYERS!`. Лечится снятием переменной (implicit-путь её не требует) либо перечислением обоих каталогов: `VK_LAYER_PATH=$HOME/.local/share/vulkan/implicit_layer.d:/usr/share/vulkan/explicit_layer.d` |
 
 ⚠️ Про `device_extensions` — это **не гипотеза**: из двух опубликованных реализаций блок
 `device_extensions` с `VK_EXT_robustness2` реально прописан в манифесте варианта
@@ -172,7 +169,7 @@ VK_LOADER_DEBUG=layer PVR_FAKE_GS=1 <ваше GL-приложение> 2>&1 | gr
 | Способ | Как | Когда нужен |
 |---|---|---|
 | implicit (**рекомендуется**) | `./install.sh` → `PVR_FAKE_GS=1 <app>` | обычный случай (проверено) |
-| explicit | `VK_LAYER_PATH=<каталог> VK_INSTANCE_LAYERS=VK_LAYER_PVR_strip PVR_FAKE_GS=1 <app>` | если манифест не установлен как implicit |
+| explicit | `VK_LAYER_PATH=<каталог> VK_INSTANCE_LAYERS=VK_LAYER_PVR_strip PVR_FAKE_GS=1 <app>` | если манифест не установлен как implicit; помните про замену каталогов |
 | выключить на процесс | `PVR_STRIP_DISABLE=1 <app>` | разовая проверка |
 | снять совсем | `.../vk-feature-strip/install.sh --uninstall` | откат |
 
@@ -181,50 +178,86 @@ VK_LOADER_DEBUG=layer PVR_FAKE_GS=1 <ваше GL-приложение> 2>&1 | gr
 Не выставляйте `PVR_FAKE_GS` глобально (`~/.profile`, autostart, окружение systemd).
 Переменная говорит **любому** Vulkan-приложению, что `geometryShader` доступен; приложение,
 которое на это поверит и создаст настоящий GS-конвейер, уронит блоб. Слой инертен ровно до тех
-пор, пока переменной нет — поэтому включать её только на конкретный запуск.
+пор, пока переменной нет — включать только на конкретный запуск.
 
-И наоборот: `LIBGL_ALWAYS_SOFTWARE=1` для рабочего стола — часть защиты от дедлока ядра
-(§6), её нельзя «заодно почистить» вместе с остальными переменными.
+И наоборот: `LIBGL_ALWAYS_SOFTWARE=1` для рабочего стола — часть защиты от дедлока ядра (§6),
+её нельзя «заодно почистить» вместе с остальными переменными.
 
 ## 5. Замеры
 
-**Наш Zero 3W (28.09.2026):**
+**Наш Zero 3W (28.09.2026, GPU 400 МГц, governor `simple_ondemand`; частота внутри прогонов
+не менялась — скрипт читает её до и после каждого теста):**
 
 | Тест | Без слоя | Со слоем (zink) |
 |---|---|---|
 | `glxinfo -B` renderer | llvmpipe (LLVM 19.1.7), GL 4.5 | zink Vulkan 1.3(PowerVR B-Series BXM-4-64 MC1), GL 2.1 |
-| `glxgears -info` (реальное окно + обмен буферов) | ✅ 840 / 841 frames in 5.0 s = **167,9 FPS** | ❌ **SIGABRT (код 134)** до первого интервала FPS, только предупреждение про `fillModeNonSolid` |
+| `glmark2-es2 --off-screen` (чистые **чередующиеся** пары, 3 прогона) | 521 / 527 / 524, медиана **524** | 400 / 401 / 417, медиана **401** |
+| `glmark2` **в окне** (GLX) | — | ✅ 319 / 325 |
+| `glmark2-es2` **в окне** (EGL/GLES) | ✅ 621 | ✅ 277 / 289 |
+| `glxheads` в окне (GLX) | — | ✅ работает (20 с без падения) |
+| `glxgears -info` в окне (GLX) | ✅ 167,9 FPS (llvmpipe) | ❌ **SIGABRT (134)**, стабильно, в том числе в чистом окружении |
+| `glxdemo` в окне (GLX) | — | ❌ **SIGABRT (134)** |
+| `vblank_mode=0 glxgears` (без вертикальной синхронизации) | — | ❌ SIGABRT — значит дело не в vsync |
 | `VK_LOADER_DEBUG` | слой не найден | `Found manifest file …/VkLayer_PVR_strip.json` |
-| `glmark2-es2 --off-screen` (без окна) | — (софт через EGL не поднимается, см. ниже) | ✅ **Score 251 и 260** (два прогона) |
-| вендорский GLES на той же плате (`glmark2-es2 --off-screen`) | **Score 332 и 336** (те же прогоны) | — |
 | ядро после опытов | — | без ошибок `pvrsrvkm`, дедлока нет (uptime не сброшен) |
 
-Примечания к нашим замерам:
+**Главное: оконный аппаратный GL работает** (и GLX, и EGL), а падают **отдельные старые
+GLX-демки** — аварийно, внутри вендорского драйвера.
 
-- **Окно падает, off-screen — работает.** Это ключевая пара: `glxgears` в окне со слоем даёт
-  SIGABRT, а `glmark2-es2 --off-screen` тем же окружением — честные 251 балл. Значит слой и
-  zink-конвейер рабочие, а упор — в **путь вывода** (WSI/презентация в X11 без DRI3/kmsro).
-- **Софт через EGL не поднимается вообще**: `glmark2-es2 --off-screen` на llvmpipe падает с
-  `eglInitialize() failed with error: 0x3001` (и в логах то же `libEGL warning: egl: failed to
-  create dri2 screen`). То есть на этой плате софтверный GL живёт в GLX-окне, а не в EGL —
-  отсюда и размен §7: окно — софт, EGL/off-screen — аппарат.
-- **Соотношение zink/вендорский GLES:** 251/332 и 260/336 = **76–77 %** — совпадает с ~70 % на
-  референсной плате, то есть пропорция устойчива.
-- **Частота GPU в момент замеров — 400 МГц** (`/sys/class/devfreq/1800000.gpu/cur_freq` =
-  `400000000`, governor `simple_ondemand`), и она **не менялась** внутри прогонов (скрипт
-  читает её до и после каждого теста). Оверлей частоты из Шага 3 плана не поднимали, поэтому
-  сравнивать числа имеет смысл только при одинаковой частоте (на референсе 581/826 сняты при
-  1104 МГц). Разброс между двумя нашими прогонами — 251/260 баллов, то есть ±4 %.
-- **Причина падения окна на уровне трейса не снята** — и это честно: ни Mesa, ни загрузчик
-  ничего не печатают перед `abort` (в stderr только предупреждение про `fillModeNonSolid`),
-  `coredumpctl` без прав, а `ZINK_DEBUG=validation` требует слоя валидации, которого в системе
-  нет (`MESA: error: Failed to load validation layer`). Что известно достоверно: контекст и
-  рендерер поднимаются, off-screen даёт 251 балл, софтверное окно в тех же условиях работает
-  (167,9 FPS), DRI3 у X-сервера отсутствует. Вывод — упор в путь вывода, а не в слой.
-  Снять точный кадр можно **без root — через отладчик** (`gdb -batch -ex run -ex "bt 15" --
-  args glxgears -info` тем же окружением) или пакетом `vulkan-validationlayers`; у нас ни то,
-  ни другое не сделано, потому что установка пакетов на плате — только с разрешения владельца.
-  Один кадр ответа назвал бы виновника: `libVK_IMG.so` (блоб) или путь вывода zink/kopper.
+### Трейс падения (`glxgears`), снят через gdb без root
+
+```bash
+env -u LD_LIBRARY_PATH PVR_FAKE_GS=1 GALLIUM_DRIVER=zink MESA_LOADER_DRIVER_OVERRIDE=zink \
+    LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu \
+    LIBGL_DRIVERS_PATH=/usr/lib/aarch64-linux-gnu/dri \
+    VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/img_icd.json DISPLAY=:0 \
+    VK_LAYER_PATH=$HOME/.local/share/vulkan/implicit_layer.d VK_INSTANCE_LAYERS=VK_LAYER_PVR_strip \
+    gdb -batch -ex run -ex "bt 25" --args glxgears -info
+```
+
+Результат:
+
+```
+Thread 8 "glxgears:gdrv0" received signal SIGABRT, Aborted.
+#0  abort ()                                   /usr/lib/aarch64-linux-gnu/libc.so.6
+#1..#11  ?? () from /usr/lib/libufwriter.so    кадр #11: BILParseStream()
+#12..#14 ?? () from /lib/libVK_IMG.so          вендорский драйвер
+#15..#21 ?? () from libgallium-25.0.7-...so    Mesa (zink)
+```
+
+Аварийное завершение приходит из **вендорского шейдерного компилятора** (`libufwriter.so`,
+`BILParseStream` — часть стека Imagination), вызванного из Mesa, на потоке драйвера `gdrv0`.
+То есть падает **блоб**, а не слой и не zink: слой лишь доводит процесс до этого места (без
+него zink не инициализируется вовсе). Точный путь по этому стеку не разводится — кадры
+`libgallium` без символов, и как доказательство «это презентация в X11» они не годятся.
+Что проверили отдельно:
+
+- `vblank_mode=0` (без vsync) — падает так же, значит дело не в обмене буферов с синхронизацией;
+- **слой валидации Khronos** (`vulkan-validationlayers`), подключённый правильно, до падения
+  **никаких ошибок Vulkan API не сообщает** — то есть это не misuse API, а внутренний abort драйвера;
+- отсутствие DRI3 (в базовой линии `glx: failed to create dri3 screen` при **софтверном**
+  рендере) само по себе оконный GL не блокирует — доказано работающими `glmark2` и `glxheads`.
+
+### Оговорки к числам (важно для воспроизводимости)
+
+- **Методика:** чередующиеся пары «zink → вендорский GLES» в одной сессии, и в каждом запуске
+  **все** переменные снимаются и выставляются явно
+  (`env -u LD_LIBRARY_PATH -u LIBGL_DRIVERS_PATH -u GALLIUM_DRIVER -u MESA_LOADER_DRIVER_OVERRIDE
+  -u PVR_FAKE_GS -u VK_LAYER_PATH -u VK_INSTANCE_LAYERS …`). На этом мы наступали: если в
+  оболочке остались `GALLIUM_DRIVER=zink`, `PVR_FAKE_GS=1`, `LD_LIBRARY_PATH` из предыдущих
+  опытов, то «вендорский» прогон на самом деле идёт через zink или падает с
+  `libEGL fatal: did not find extension DRI_Mesa version 1` — и числа врут.
+- **Частота GPU не фиксирована**: governor `simple_ondemand`, наблюдали **400 МГц** в простое и
+  до **1008 МГц** под нагрузкой (Шаг 3 плана предполагал «жёсткие 600 МГц» — на практике нет).
+  Поэтому абсолютные баллы сравнимы только внутри одной серии; в `scripts/opengl-zink-bench.sh`
+  частота сэмплируется **во время** прогона, а не только до и после.
+- **Воспроизводимость:** тот же замер, повторённый нашим скриптом после правок, дал zink **426**
+  и вендорский GLES **542** (79 %), частота во время прогонов — 400 МГц (сэмплирование −
+  см. `scripts/opengl-zink-bench.sh`). То есть порядок и соотношение устойчивы, абсолютные
+  баллы гуляют на ±5–10 % между сессиями.
+- Софт через EGL на нашей плате не поднимается вовсе: `glmark2-es2 --off-screen` на llvmpipe
+  падает с `eglInitialize() failed with error: 0x3001`. Поэтому софтверный GL здесь живёт в
+  GLX-окне (`glxgears` 167,9 FPS), а EGL/off-screen — аппаратный.
 
 **Референсная плата с той же GPU и тем же DDK** (Radxa Cubie A7A, Debian 13 trixie,
 `glmark2-es2 --off-screen -b build:duration=2`):
@@ -238,16 +271,17 @@ VK_LOADER_DEBUG=layer PVR_FAKE_GS=1 <ваше GL-приложение> 2>&1 | gr
 | вендорский GLES (стоковые 600 МГц) | **659** |
 | `PVR_FAKE_GS=1 PVR_FAKE_R2=1` | **SIGSEGV** внутри `libVK_IMG.so` (без падения ядра) |
 
-Вывод: аппаратный GL через zink даёт примерно **70 %** от вендорского GLES на той же плате,
-и только в off-screen-режиме. Потолок аппаратного GL на этом блобе — **GL 2.1 / GLES 2.0**.
+Вывод: аппаратный GL через zink даёт примерно **70–80 %** от вендорского GLES на той же плате.
+Потолок аппаратного GL на этом блобе — **GL 2.1 / GLES 2.0**.
 
 ## 6. Грабли (каждая проверена и стоила времени)
 
 - **`zink` без слоя не стартует** — `geometryShader` у блоба `false` (§2.2).
-- **В окне аппаратный GL не работает.** Причина не в слое: у X-сервера нет DRI3/kmsro
-  (`glx: failed to create dri3 screen` в базовой линии), а рабочий стол у нас намеренно
-  программный. Итог: `glxinfo`/`glmark2 --off-screen` — да, окно — нет (`glxgears` падает
-  с SIGABRT, см. §5).
+- **Часть старых GLX-программ аварийно падает** (`glxgears`, `glxdemo`): `abort()` внутри
+  вендорского шейдерного компилятора (`libufwriter.so` → `BILParseStream`, трейс в §5). При
+  этом `glmark2` (GLX), `glmark2-es2` (EGL) и `glxheads` в окне работают. Что общего у падающих
+  программ, не установлено — нужен разбор создаваемых ими пайплайнов; проверяйте конкретное
+  приложение, а не «в целом работает».
 - **`fillModeNonSolid` у блоба нет.** zink предупреждает об этом при инициализации: сплошная
   заливка рисуется корректно, каркас и неполная заливка (`glPolygonMode`) — ненадёжны.
 - **Mesa ≥ 26 не обновлять.** zink 26+ требует `VK_EXT_robustness2.nullDescriptor`, а блоб
@@ -257,8 +291,8 @@ VK_LOADER_DEBUG=layer PVR_FAKE_GS=1 <ваше GL-приложение> 2>&1 | gr
   (`mutex_spin_on_owner` в IRQ → лечится только power-cycle). Поэтому программный рабочий стол
   и `LIBGL_ALWAYS_SOFTWARE=1` — это **защита, а не костыль**: не включать glamor, не поднимать
   Wayland-композитор на GPU, **не ставить `DXVK_HUD`** (тот же класс отказа).
-- **Двойная Mesa.** Вендорский стек в `/usr/local` имеет приоритет по `ldconfig`, поэтому
-  путь zink обязан запускаться со scoped `LD_LIBRARY_PATH` на системную Mesa (в блоке §4 —
+- **Двойная Mesa.** Вендорский стек в `/usr/local` имеет приоритет по `ldconfig`, поэтому путь
+  zink обязан запускаться со scoped `LD_LIBRARY_PATH` на системную Mesa (в блоках выше —
   `env -u LD_LIBRARY_PATH LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:...`).
 - **Блоб сообщает 114 device extensions** и не имеет `descriptor_buffer`, resizable BAR и
   `non_seamless_cube_map` — отсюда вывод «просто поставить новее Mesa» ничего не даёт.
@@ -266,21 +300,20 @@ VK_LOADER_DEBUG=layer PVR_FAKE_GS=1 <ваше GL-приложение> 2>&1 | gr
   dispatch-таблиц по хэндлу. Годится для `glxinfo`/`eglinfo`/`glmark2` и однопроцессных
   приложений; для многопоточных/многопрефиксных — не универсален.
 - **Фейк настоящих geometry-шейдеров уронил бы блоб** (на headless-плате это power-cycle),
-  поэтому подделка — исключительно на опрос, а не на исполнение. Отдельно это не проверялось
-  и проверять не советуем.
+  поэтому подделка — исключительно на опрос, а не на исполнение. Отдельно не проверялось и
+  проверять не советуем.
 
 ## 7. Что это даёт и чего не даёт
 
-- ✅ **Аппаратный рендерер desktop OpenGL** приложениям, которым достаточно
-  **off-screen/EGL** (рендер в FBO, headless-сцены, GL-вычисления).
-- ⚖️ **Быстрее — но уже.** zink даёт **GL 2.1**, llvmpipe — **GL 4.5**. Приложение,
-  которому нужен GL ≥ 3.x, со zink просто не запустится; для такого остаётся софт-путь
-  (медленнее, зато 4.5). Выбор делается под задачу.
-- ❌ **Окно** — не работает (`glxgears` со слоем падает; нет DRI3/kmsro). Приложения с окном
-  идут другим маршрутом.
-- ❌ **Игры с окном — это не GL, а Direct3D**: route = DXVK-Sarek (arm64ec) поверх того же
-  Vulkan + этот же слой; тот же слой обязателен, `DXVK_HUD` — нельзя.
+- ✅ **Аппаратный desktop OpenGL — и без окна, и в окне**: off-screen/EGL (рендер в FBO,
+  headless-сцены, GL-вычисления) и оконные приложения, не попадающие на дефект блоба
+  (`glmark2`, `glmark2-es2`, `glxheads`).
+- ⚖️ **Быстрее — но уже.** zink даёт **GL 2.1**, llvmpipe — **GL 4.5**. Приложению, которому
+  нужен GL ≥ 3.x, zink не подойдёт; для такого остаётся софт-путь (медленнее, зато 4.5).
+- ⚠️ **Падения отдельных программ не исключены** (§5/§6): проверять конкретное приложение.
 - ❌ **GPU-композитор и GPU-рабочий стол** — нельзя (дедлок ядра).
+- ℹ️ **Игры с окном — это не GL, а Direct3D**: маршрут — DXVK-Sarek (arm64ec) поверх того же
+  Vulkan + этот же слой; `DXVK_HUD` — нельзя.
 
 ### Практический пример: Disciples II (DirectDraw, 2D)
 
@@ -294,8 +327,9 @@ VK_LOADER_DEBUG=layer PVR_FAKE_GS=1 <ваше GL-приложение> 2>&1 | gr
 
 Разбор попыток — в репозитории игры:
 [`opi-zero-3w-disciples2/docs/RENDERER-EXPERIMENTS.md`](https://github.com/Haidegger22/opi-zero-3w-disciples2/blob/main/docs/RENDERER-EXPERIMENTS.md).
-Причина: игра оборачивает DirectDraw сама (`C4dll-R.dll`), а D3D7-путь через zink без
-`fillModeNonSolid` не рисует. То есть для DirectDraw-игр окно закрыто.
+Причина: игра оборачивает DirectDraw сама (`C4dll-R.dll`). С учётом того, что отдельные
+GLX-программы падают в вендорском компиляторе шейдеров, белый экран `UseD3D=1` тоже разумно
+списать на блоб, а не на настройку игры.
 
 ## 8. Откат
 
@@ -315,7 +349,8 @@ PVR_STRIP_DISABLE=1 <app>                                                 # на
   (MIT) — второй вариант слоя и лог воспроизведения на Armbian (вариант с блоком
   `device_extensions`, см. §4).
 - Воспроизведение и проверка на Zero 3W: **28.09.2026**, Зеро (плата) и Джарвис (Pi 5) —
-  сборка слоя, замеры `glxinfo`/`glxgears`/`glmark2`, разбор грабель, взаимная сверка документа.
+  сборка слоя, замеры `glxinfo`/`glmark2`/`glxgears`, трейс через gdb, разбор грабель,
+  взаимная сверка документа.
 - **Проприетарные бинарники здесь не публикуются** (DDK, `libVK_IMG.so`, firmware, `pvrsrvkm.ko`):
   они берутся из образа/репозитория производителя, см. основной README.
 - Чужие документы целиком не копируются — только ссылки и выводы, с указанием авторства (MIT).

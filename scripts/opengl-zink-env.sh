@@ -32,11 +32,19 @@ MESA_LOADER_DRIVER_OVERRIDE=zink
 LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu
 LIBGL_DRIVERS_PATH=/usr/lib/aarch64-linux-gnu/dri
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/img_icd.json
-VK_LAYER_PATH=${XDG_DATA_HOME:-$HOME/.local/share}/vulkan/implicit_layer.d
-VK_INSTANCE_LAYERS=VK_LAYER_PVR_strip
+
+# Явное подключение слоя НЕ требуется: манифест установлен как implicit, и PVR_FAKE_GS=1
+# включает его (проверено). Хуже того, VK_LAYER_PATH ЗАМЕНЯЕТ стандартные каталоги поиска
+# explicit-слоёв, а не дополняет их — пока переменная выставлена, для процесса невидимы
+# чужие explicit-слои (валидация Khronos, RenderDoc, MangoHud): лоадер отвечает
+# 'Layer "VK_LAYER_KHRONOS_validation" was not found but was requested by env var'.
+# Если ваш слой доступен только как explicit — раскомментируйте две строки ниже, и
+# обязательно оставьте в списке оба каталога:
+#VK_LAYER_PATH=${XDG_DATA_HOME:-$HOME/.local/share}/vulkan/implicit_layer.d:/usr/share/vulkan/explicit_layer.d
+#VK_INSTANCE_LAYERS=VK_LAYER_PVR_strip
 
 export PVR_FAKE_GS GALLIUM_DRIVER MESA_LOADER_DRIVER_OVERRIDE LD_LIBRARY_PATH
-export LIBGL_DRIVERS_PATH VK_ICD_FILENAMES VK_LAYER_PATH VK_INSTANCE_LAYERS
+export LIBGL_DRIVERS_PATH VK_ICD_FILENAMES
 
 [ -n "${DISPLAY:-}" ] || { DISPLAY=:0; export DISPLAY; }
 

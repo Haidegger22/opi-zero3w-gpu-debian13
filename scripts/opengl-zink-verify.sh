@@ -6,9 +6,9 @@
 # Что показывает:
 #   1) честную базовую линию — БЕЗ слоя и БЕЗ принудительного софта (как есть на стоке);
 #   2) аппаратный рендерер со слоем (ожидаем zink Vulkan 1.3(PowerVR ...));
-#   3) что слой действительно поднят лоадером (implicit-путь, только PVR_FAKE_GS=1);
-#   4) работает ли ОКНО — на этой плате НЕ работает: glxgears падает с SIGABRT,
-#      софтверный вариант при этом рисует ~168 FPS (это и есть доказательство, что дело в GL, а не в X11).
+#   3) что слой действительно поднят — implicit-путь, только PVR_FAKE_GS=1;
+#   4) окно: у glmark2 работает (GLX), а старые демки вроде glxgears падают с SIGABRT —
+#      падение происходит внутри вендорского компилятора шейдеров (docs/OPENGL-ZINK.md §5).
 set -u
 export DISPLAY="${DISPLAY:-:0}"
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -39,7 +39,7 @@ fi
 
 echo
 echo "=== 3) implicit-путь: достаточно ли одной PVR_FAKE_GS=1 ==="
-# Kритично снять VK_LAYER_PATH/VK_INSTANCE_LAYERS: иначе проверяется explicit-путь,
+# Критично снять VK_LAYER_PATH/VK_INSTANCE_LAYERS: иначе проверяется explicit-путь,
 # а не включение implicit-манифеста по переменной.
 imp=$(env -u LD_LIBRARY_PATH -u VK_LAYER_PATH -u VK_INSTANCE_LAYERS \
       PVR_FAKE_GS=1 GALLIUM_DRIVER=zink MESA_LOADER_DRIVER_OVERRIDE=zink \
@@ -62,33 +62,53 @@ if command -v vulkaninfo >/dev/null; then
 fi
 
 echo
-echo "=== 4) окно (ожидаемо НЕ работает) ==="
+echo "=== 4) окно: glmark2 (ожидаемо работает) против glxgears (известный падающий случай) ==="
+if command -v glmark2 >/dev/null; then
+    pkill -x glmark2 2>/dev/null; sleep 1
+    env -u LD_LIBRARY_PATH PVR_FAKE_GS=1 GALLIUM_DRIVER=zink MESA_LOADER_DRIVER_OVERRIDE=zink \
+        LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu \
+        LIBGL_DRIVERS_PATH=/usr/lib/aarch64-linux-gnu/dri \
+        VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/img_icd.json \
+        timeout -s KILL 240 glmark2 -b build:duration=1 >/tmp/zink-glmark2-win.log 2>&1
+    code=$?
+    score=$(grep -a 'glmark2 Score' /tmp/zink-glmark2-win.log | tail -1 | awk '{print $NF}')
+    # Код возврата тут не показатель: glmark2 штатно завершает бенчмарк, а потом падает с
+    # косметической ошибкой X11 BadWindow при закрытии окна (код 1). Признак успеха — оценка.
+    if [ -n "$score" ]; then
+        echo "   ✅ окно через GLX: glmark2 отработал аппаратно, Score $score (код выхода $code)"
+    else
+        echo "   ⚠ окно через GLX: glmark2 не дал оценки (код $code) — см. /tmp/zink-glmark2-win.log"
+        rc=1
+    fi
+    pkill -x glmark2 2>/dev/null
+else
+    echo "   glmark2 не установлен (Debian: пакет glmark2) — пропуск"
+fi
 if command -v glxgears >/dev/null; then
     pkill -x glxgears 2>/dev/null; sleep 1
     env -u LD_LIBRARY_PATH PVR_FAKE_GS=1 GALLIUM_DRIVER=zink MESA_LOADER_DRIVER_OVERRIDE=zink \
         LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu \
         LIBGL_DRIVERS_PATH=/usr/lib/aarch64-linux-gnu/dri \
         VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/img_icd.json \
-        VK_LAYER_PATH="${XDG_DATA_HOME:-$HOME/.local/share}/vulkan/implicit_layer.d" \
-        VK_INSTANCE_LAYERS=VK_LAYER_PVR_strip \
-        timeout -s KILL 12 glxgears -info >/tmp/zink-glxgears.out 2>/tmp/zink-glxgears.err
+        timeout -s KILL 15 glxgears -info >/tmp/zink-glxgears.out 2>/tmp/zink-glxgears.err
     code=$?
     fps=$(grep -acE 'frames in' /tmp/zink-glxgears.out)
     case "$code" in
-        134) echo "   ⛔ окно со слоем: SIGABRT — аппаратный GL в окне не работает (нет DRI3/kmsro)" ;;
-        139) echo "   ⛔ окно со слоем: SIGSEGV — аппаратный GL в окне не работает" ;;
-        0|137) [ "$fps" -gt 0 ] && echo "   ✅ окно со слоем отработало ($fps интервалов FPS) — на нашей плате это не воспроизводится" \
-                              || echo "   ⚠ окно закрыто по таймауту без FPS" ;;
-        *)  echo "   ⚠ код возврата $code (см. /tmp/zink-glxgears.err)" ;;
+        134|139) [ "$fps" -gt 0 ] \
+                   && echo "   ℹ glxgears отработал ($fps интервалов FPS) — на нашей плате он падает, у вас нет" \
+                   || echo "   ⛔ glxgears: код $code — известный падающий случай (abort внутри вендорского компилятора шейдеров)" ;;
+        0|137)   echo "   ℹ glxgears: код $code, интервалов FPS $fps" ;;
+        *)       echo "   ⚠ glxgears: код $code (см. /tmp/zink-glxgears.err)" ;;
     esac
     pkill -x glxgears 2>/dev/null
 else
-    echo "   glxgears не установлен (apt install mesa-utils) — пропуск"
+    echo "   glxgears не установлен (Debian: пакет mesa-utils) — пропуск"
 fi
 
 echo
 if [ "$rc" = 0 ]; then
-    echo "ИТОГ: аппаратный рендерер доступен (off-screen/EGL). Окно через GLX не работает — это стена, а не настройка."
+    echo "ИТОГ: аппаратный рендерер доступен — и off-screen/EGL, и в окне. Отдельные старые GLX-программы"
+    echo "      (glxgears, glxdemo) падают внутри вендорского шейдерного компилятора — docs/OPENGL-ZINK.md §5."
 else
     echo "ИТОГ: не всё сошлось, см. пункты выше. Диагностика: scripts/opengl-zink-install.sh --check"
 fi

@@ -26,11 +26,20 @@ run() { # $1=метка, дальше — окружение для env(1)
     label=$1; shift
     echo "=== $label ==="
     echo "   частота ДО прогона:"; gpu_state
+    # Частота у devfreq ГУЛЯЕТ (governor simple_ondemand: 400 МГц в простое, до ~1008 МГц под
+    # нагрузкой), поэтому сэмплируем её во время прогона, а не только до/после.
+    ( while :; do cat /sys/class/devfreq/1800000.gpu/cur_freq 2>/dev/null || break; sleep 1; done > "$OUT/$label.freq" ) &
+    sampler=$!
     env "$@" timeout -s KILL 300 glmark2-es2 --off-screen -b build:duration=2 \
         > "$OUT/$label.log" 2>&1
-    echo "   код возврата: $?"
+    status=$?
+    kill "$sampler" 2>/dev/null; wait "$sampler" 2>/dev/null
+    echo "   код возврата: $status"
     grep -aE 'GL_RENDERER|GL_VERSION|glmark2 Score' "$OUT/$label.log" | tail -3 | sed 's/^/      /'
     grep -aiE 'error|fail|abort|segmentation' "$OUT/$label.log" | head -3 | sed 's/^/      ⚠ /'
+    if [ -s "$OUT/$label.freq" ]; then
+        echo "   частота ВО ВРЕМЯ прогона: min=$(sort -n "$OUT/$label.freq" | head -1) Гц, max=$(sort -n "$OUT/$label.freq" | tail -1) Гц"
+    fi
     echo "   частота ПОСЛЕ прогона:"; gpu_state
 }
 
@@ -43,11 +52,16 @@ run zink \
     VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/img_icd.json
 
 echo
-run vendor-gles -u LD_LIBRARY_PATH -u PVR_FAKE_GS -u GALLIUM_DRIVER \
-    -u MESA_LOADER_DRIVER_OVERRIDE -u VK_LAYER_PATH -u VK_INSTANCE_LAYERS
+# Вендорский и софтверный прогоны обязаны снять ВСЕ zink-переменные, включая LIBGL_DRIVERS_PATH:
+# если она осталась от предыдущих опытов, Mesa ищет DRI-драйверы в системном каталоге и вендорский
+# EGL падает с 'failed to open sunxi-drm' / 'libEGL fatal: did not find extension DRI_Mesa version 1'.
+run vendor-gles -u LD_LIBRARY_PATH -u LIBGL_DRIVERS_PATH -u LIBGL_ALWAYS_SOFTWARE \
+    -u PVR_FAKE_GS -u GALLIUM_DRIVER -u MESA_LOADER_DRIVER_OVERRIDE \
+    -u VK_LAYER_PATH -u VK_INSTANCE_LAYERS
 
 echo
-run llvmpipe -u LD_LIBRARY_PATH -u PVR_FAKE_GS -u VK_LAYER_PATH -u VK_INSTANCE_LAYERS \
+run llvmpipe -u LD_LIBRARY_PATH -u LIBGL_DRIVERS_PATH -u PVR_FAKE_GS \
+    -u VK_LAYER_PATH -u VK_INSTANCE_LAYERS \
     LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
 
 echo
